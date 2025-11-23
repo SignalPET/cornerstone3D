@@ -692,33 +692,23 @@ class Cache {
         return cachedImage.imageLoadObject;
       }
 
-      // Create a new decompression promise using the compression provider
-      // Note: We don't save the decompressed image back to the cache to maximize
-      // memory efficiency. This allows prefetching many compressed images (e.g., 700+
-      // ultrasound frames). Images are decompressed on-demand each time they're accessed.
+      // Decompress on-demand WITHOUT storing the promise
+      // CRITICAL: We must NOT store promises that hold decompressed pixel data
+      // Each resolved promise retains ~2-3MB of pixel data in memory forever
+      // With 3000+ images, this causes 7GB+ memory leaks
+      const decompressionPromise = this._compressionProvider.decompress(
+        cachedImage.compressedBlob,
+        imageId
+      );
+
       const decompressionLoadObject = {
-        promise: this._compressionProvider
-          .decompress(cachedImage.compressedBlob, imageId)
-          .then((decompressedImage) => {
-            // Clear the promise so next access will decompress again
-            // Preserve cancelFn and decache from the original image load
-            cachedImage.imageLoadObject = {
-              promise: undefined,
-              cancelFn: cachedImage.imageLoadObject?.cancelFn,
-              decache: cachedImage.imageLoadObject?.decache,
-            };
-            return decompressedImage;
-          }),
+        promise: decompressionPromise,
         cancelFn: cachedImage.imageLoadObject?.cancelFn,
         decache: cachedImage.imageLoadObject?.decache,
       };
 
-      // Store the decompression promise in the cache to prevent race conditions.
-      // This ensures that if the same image is requested multiple times while
-      // decompression is in progress, all requests will use the same promise
-      // instead of triggering multiple decompressions or server fetches.
-      cachedImage.imageLoadObject = decompressionLoadObject;
-
+      // DO NOT store the promise - create fresh ones on each access
+      // This allows garbage collection of decompressed pixel data
       return decompressionLoadObject;
     }
 
