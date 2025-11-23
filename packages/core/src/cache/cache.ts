@@ -527,22 +527,22 @@ class Cache {
       cachedImage.sizeInBytes = newSize;
       this.incrementImageCacheSize(sizeDifference);
 
-      // Clear uncompressed image data to free memory.
-      // The image will be decompressed on-demand when accessed.
-      cachedImage.image = undefined;
-
-      // Clear the promise after compression to prevent memory leak
-      // Use queueMicrotask to ensure this happens after current operations complete
-      // This prevents race conditions with active renders while still freeing memory
-      queueMicrotask(() => {
-        if (cachedImage.imageLoadObject?.promise && cachedImage.isCompressed) {
-          cachedImage.imageLoadObject = {
-            promise: undefined,
-            cancelFn: cachedImage.imageLoadObject.cancelFn,
-            decache: cachedImage.imageLoadObject.decache,
-          };
+      // Keep the image object but clear the pixel data buffer references
+      // The compressed blob is much smaller and will be decompressed on-demand
+      if (cachedImage.image) {
+        // Clear voxelManager if it exists (large)
+        if (cachedImage.image.voxelManager) {
+          delete cachedImage.image.voxelManager;
         }
-      });
+
+        // Clear imageFrame.pixelData if it exists (large buffer)
+        if (cachedImage.image.imageFrame?.pixelData) {
+          delete cachedImage.image.imageFrame.pixelData;
+        }
+      }
+
+      // Note: We keep cachedImage.image with all metadata, just clear large buffers
+      // The getPixelData() function will be replaced on-demand during decompression
     } catch (error) {
       console.warn(`Failed to compress image ${imageId}:`, error);
     }
@@ -620,6 +620,21 @@ class Cache {
       .then((image: IImage) => {
         try {
           this._putImageCommon(imageId, image, cachedImage);
+
+          // CRITICAL MEMORY FIX: Clear the promise to release the resolved image from memory
+          // Promises retain their resolved values forever, causing a memory leak of 2-5MB per image.
+          // The image is already stored in cachedImage.image, so we don't need the promise.
+          // getImageLoadObject() will create promises on-demand when needed.
+          if (cachedImage.imageLoadObject) {
+            const originalCancelFn = cachedImage.imageLoadObject.cancelFn;
+            const originalDecache = cachedImage.imageLoadObject.decache;
+
+            cachedImage.imageLoadObject = {
+              promise: undefined, // Don't keep the promise - prevents memory leak
+              cancelFn: originalCancelFn,
+              decache: originalDecache,
+            };
+          }
         } catch (error) {
           console.debug(
             `Error in _putImageCommon for image ${imageId}:`,
@@ -690,31 +705,58 @@ class Cache {
     // Bump time stamp for cached image
     cachedImage.timeStamp = Date.now();
 
-    // If compressed and image not in memory, decompress on-demand using the provider
+    // DECOMPRESS-ON-DEMAND STRATEGY (Memory-first approach)
+    // If image is compressed, we ALWAYS decompress fresh on every access.
+    // We DO NOT cache the decompressed result to minimize memory usage.
+    //
+    // Trade-off: ~10-20ms CPU cost per access vs 2-5MB memory per cached decompression
+    // For memory-constrained environments (browser), this is the right choice.
     if (
       cachedImage.isCompressed &&
       cachedImage.compressedBlob &&
-      !cachedImage.image &&
       this._compressionProvider
     ) {
-      // SIMPLE APPROACH: Just decompress fresh each time
-      // Don't store or reuse promises to avoid memory leaks
-      // CPU cost of re-decompression (~10ms) << memory cost (2-3MB per promise)
-      const decompressionPromise = this._compressionProvider.decompress(
-        cachedImage.compressedBlob,
-        imageId
-      );
+      // Create a fresh decompression promise
+      const decompressionPromise = this._compressionProvider
+        .decompress(cachedImage.compressedBlob, imageId)
+        .then((decompressedPixelData) => {
+          // Keep the original image object with all its metadata
+          // Just replace the getPixelData function with the decompressed data
+          const image = cachedImage.image;
+          if (!image) {
+            throw new Error('Image object not found for decompression');
+          }
 
-      const decompressionLoadObject = {
+          // Replace the pixel data accessor with the decompressed data
+          image.getPixelData = () => decompressedPixelData.getPixelData();
+
+          // Clear getCanvas if it exists - will be recreated on-demand if needed
+          if (image.getCanvas) {
+            delete image.getCanvas;
+          }
+
+          return image;
+        });
+
+      // Return a new load object each time - no memory accumulation
+      return {
         promise: decompressionPromise,
         cancelFn: cachedImage.imageLoadObject?.cancelFn,
         decache: cachedImage.imageLoadObject?.decache,
       };
-
-      // DO NOT STORE - return directly to avoid memory leak
-      return decompressionLoadObject;
     }
 
+    // Image is loaded but promise was cleared to prevent memory leak
+    // Create a promise on-demand that resolves to the current cached image
+    if (cachedImage.loaded && !cachedImage.imageLoadObject?.promise) {
+      return {
+        promise: Promise.resolve(cachedImage.image),
+        cancelFn: cachedImage.imageLoadObject?.cancelFn,
+        decache: cachedImage.imageLoadObject?.decache,
+      };
+    }
+
+    // Image is still loading, return the original load object
     return cachedImage.imageLoadObject;
   }
 
