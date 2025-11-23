@@ -720,22 +720,22 @@ class Cache {
       const decompressionPromise = this._compressionProvider
         .decompress(cachedImage.compressedBlob, imageId)
         .then((decompressedPixelData) => {
-          // Keep the original image object with all its metadata
-          // Just replace the getPixelData function with the decompressed data
-          const image = cachedImage.image;
-          if (!image) {
+          const originalImage = cachedImage.image;
+          if (!originalImage) {
             throw new Error('Image object not found for decompression');
           }
 
-          // Replace the pixel data accessor with the decompressed data
-          image.getPixelData = () => decompressedPixelData.getPixelData();
+          // Create a NEW image object each time to avoid memory leaks
+          // This ensures old decompressed data can be garbage collected
+          const decompressedImage = {
+            ...originalImage,
+            // Replace pixel data accessor with fresh decompressed data
+            getPixelData: () => decompressedPixelData.getPixelData(),
+            // Don't include getCanvas - it will be recreated on-demand if needed
+            getCanvas: undefined,
+          };
 
-          // Clear getCanvas if it exists - will be recreated on-demand if needed
-          if (image.getCanvas) {
-            delete image.getCanvas;
-          }
-
-          return image;
+          return decompressedImage;
         });
 
       // Return a new load object each time - no memory accumulation
