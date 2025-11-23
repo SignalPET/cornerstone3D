@@ -530,6 +530,17 @@ class Cache {
       // Clear uncompressed image data to free memory.
       // The image will be decompressed on-demand when accessed.
       cachedImage.image = undefined;
+
+      // CRITICAL: Also clear the promise to prevent memory leak
+      // The promise's resolved value holds the decompressed image (2-3MB each)
+      // With 3000+ images, this causes 7GB+ memory leaks
+      if (cachedImage.imageLoadObject?.promise) {
+        cachedImage.imageLoadObject = {
+          promise: undefined,
+          cancelFn: cachedImage.imageLoadObject.cancelFn,
+          decache: cachedImage.imageLoadObject.decache,
+        };
+      }
     } catch (error) {
       console.warn(`Failed to compress image ${imageId}:`, error);
     }
