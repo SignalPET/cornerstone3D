@@ -531,16 +531,18 @@ class Cache {
       // The image will be decompressed on-demand when accessed.
       cachedImage.image = undefined;
 
-      // CRITICAL: Also clear the promise to prevent memory leak
-      // The promise's resolved value holds the decompressed image (2-3MB each)
-      // With 3000+ images, this causes 7GB+ memory leaks
-      if (cachedImage.imageLoadObject?.promise) {
-        cachedImage.imageLoadObject = {
-          promise: undefined,
-          cancelFn: cachedImage.imageLoadObject.cancelFn,
-          decache: cachedImage.imageLoadObject.decache,
-        };
-      }
+      // Clear the promise after compression to prevent memory leak
+      // Use queueMicrotask to ensure this happens after current operations complete
+      // This prevents race conditions with active renders while still freeing memory
+      queueMicrotask(() => {
+        if (cachedImage.imageLoadObject?.promise && cachedImage.isCompressed) {
+          cachedImage.imageLoadObject = {
+            promise: undefined,
+            cancelFn: cachedImage.imageLoadObject.cancelFn,
+            decache: cachedImage.imageLoadObject.decache,
+          };
+        }
+      });
     } catch (error) {
       console.warn(`Failed to compress image ${imageId}:`, error);
     }
@@ -695,18 +697,9 @@ class Cache {
       !cachedImage.image &&
       this._compressionProvider
     ) {
-      // Check if we already have a decompression in progress.
-      // If imageLoadObject.promise exists and the image is still undefined,
-      // it means we're already decompressing, so return the existing promise
-      // to avoid creating duplicate decompression operations.
-      if (cachedImage.imageLoadObject?.promise) {
-        return cachedImage.imageLoadObject;
-      }
-
-      // Decompress on-demand WITHOUT storing the promise
-      // CRITICAL: We must NOT store promises that hold decompressed pixel data
-      // Each resolved promise retains ~2-3MB of pixel data in memory forever
-      // With 3000+ images, this causes 7GB+ memory leaks
+      // SIMPLE APPROACH: Just decompress fresh each time
+      // Don't store or reuse promises to avoid memory leaks
+      // CPU cost of re-decompression (~10ms) << memory cost (2-3MB per promise)
       const decompressionPromise = this._compressionProvider.decompress(
         cachedImage.compressedBlob,
         imageId
@@ -718,8 +711,7 @@ class Cache {
         decache: cachedImage.imageLoadObject?.decache,
       };
 
-      // DO NOT store the promise - create fresh ones on each access
-      // This allows garbage collection of decompressed pixel data
+      // DO NOT STORE - return directly to avoid memory leak
       return decompressionLoadObject;
     }
 
