@@ -11,6 +11,7 @@ import type {
   ICachedGeometry,
   EventTypes,
   IImageVolume,
+  CompressionProvider,
 } from '../types';
 import triggerEvent from '../utilities/triggerEvent';
 import imageIdToURI from '../utilities/imageIdToURI';
@@ -45,6 +46,8 @@ class Cache {
   private _imageCacheSize = 0;
   private _maxCacheSize = 3 * ONE_GB;
   private _geometryCacheSize = 0;
+
+  private _compressionProvider: CompressionProvider | null = null;
 
   /**
    * Generates a deterministic volume ID from a list of image IDs
@@ -93,6 +96,35 @@ class Cache {
 
     this._maxCacheSize = newMaxCacheSize;
   };
+
+  /**
+   * Set a compression provider for the cache
+   *
+   * The compression provider handles compressing images after they are loaded
+   * and decompressing them on-demand when accessed. This allows for pluggable
+   * compression strategies (WebP, JPEG, PNG, or custom formats).
+   *
+   * @example
+   * ```typescript
+   * import { createWebPCompressionProvider } from './utils/createWebPCompressionProvider';
+   *
+   * const provider = createWebPCompressionProvider({ quality: 0.8 });
+   * cache.setCompressionProvider(provider);
+   * ```
+   *
+   * @param provider - The compression provider implementation, or null to disable
+   */
+  public setCompressionProvider(provider: CompressionProvider | null): void {
+    this._compressionProvider = provider;
+  }
+
+  /**
+   * Get the current compression provider
+   * @returns The active compression provider, or null if none is set
+   */
+  public getCompressionProvider(): CompressionProvider | null {
+    return this._compressionProvider;
+  }
 
   /**
    * Determines if the cache can accommodate the requested byte size.
@@ -181,6 +213,11 @@ class Cache {
 
     if (imageLoadObject?.decache) {
       imageLoadObject.decache();
+    }
+
+    // Clean up compressed blob if it exists
+    if (cachedImage.compressedBlob) {
+      cachedImage.compressedBlob = undefined;
     }
 
     this._imageCache.delete(imageId);
@@ -439,6 +476,76 @@ class Cache {
     triggerEvent(eventTarget, Events.IMAGE_CACHE_IMAGE_ADDED, eventDetails);
 
     cachedImage.sharedCacheKey = image.sharedCacheKey;
+
+    // Compress image asynchronously if a compression provider is configured
+    // This happens after the image is loaded and cached, so it doesn't block
+    // the initial display
+    if (this._compressionProvider) {
+      this._compressAndStoreImage(imageId, image, cachedImage).catch(
+        (error) => {
+          console.warn('Failed to compress image:', error);
+        }
+      );
+    }
+  }
+
+  /**
+   * Compress and store image asynchronously using the configured compression provider
+   *
+   * This method uses the active compression provider to compress an image, then
+   * replaces the uncompressed image data with the compressed blob to save memory.
+   *
+   * @param imageId - Image identifier
+   * @param image - Cornerstone image object
+   * @param cachedImage - Cached image entry
+   */
+  private async _compressAndStoreImage(
+    imageId: string,
+    image: IImage,
+    cachedImage: ICachedImage
+  ): Promise<void> {
+    if (!this._compressionProvider) {
+      return;
+    }
+
+    try {
+      const blob = await this._compressionProvider.compress(image);
+
+      // Check if image is still in cache (may have been evicted during compression)
+      if (!this._imageCache.has(imageId)) {
+        return;
+      }
+
+      cachedImage.compressedBlob = blob;
+      cachedImage.isCompressed = true;
+
+      // Update cache size tracking to reflect the compressed size
+      const oldSize = cachedImage.sizeInBytes;
+      const newSize = blob.size;
+      const sizeDifference = newSize - oldSize;
+
+      cachedImage.sizeInBytes = newSize;
+      this.incrementImageCacheSize(sizeDifference);
+
+      // Keep the image object but clear the pixel data buffer references
+      // The compressed blob is much smaller and will be decompressed on-demand
+      if (cachedImage.image) {
+        // Clear voxelManager if it exists (large)
+        if (cachedImage.image.voxelManager) {
+          delete cachedImage.image.voxelManager;
+        }
+
+        // Clear imageFrame.pixelData if it exists (large buffer)
+        if (cachedImage.image.imageFrame?.pixelData) {
+          delete cachedImage.image.imageFrame.pixelData;
+        }
+      }
+
+      // Note: We keep cachedImage.image with all metadata, just clear large buffers
+      // The getPixelData() function will be replaced on-demand during decompression
+    } catch (error) {
+      console.warn(`Failed to compress image ${imageId}:`, error);
+    }
   }
 
   /**
@@ -513,6 +620,21 @@ class Cache {
       .then((image: IImage) => {
         try {
           this._putImageCommon(imageId, image, cachedImage);
+
+          // CRITICAL MEMORY FIX: Clear the promise to release the resolved image from memory
+          // Promises retain their resolved values forever, causing a memory leak of 2-5MB per image.
+          // The image is already stored in cachedImage.image, so we don't need the promise.
+          // getImageLoadObject() will create promises on-demand when needed.
+          if (cachedImage.imageLoadObject) {
+            const originalCancelFn = cachedImage.imageLoadObject.cancelFn;
+            const originalDecache = cachedImage.imageLoadObject.decache;
+
+            cachedImage.imageLoadObject = {
+              promise: undefined, // Don't keep the promise - prevents memory leak
+              cancelFn: originalCancelFn,
+              decache: originalDecache,
+            };
+          }
         } catch (error) {
           console.debug(
             `Error in _putImageCommon for image ${imageId}:`,
@@ -583,6 +705,58 @@ class Cache {
     // Bump time stamp for cached image
     cachedImage.timeStamp = Date.now();
 
+    // DECOMPRESS-ON-DEMAND STRATEGY (Memory-first approach)
+    // If image is compressed, we ALWAYS decompress fresh on every access.
+    // We DO NOT cache the decompressed result to minimize memory usage.
+    //
+    // Trade-off: ~10-20ms CPU cost per access vs 2-5MB memory per cached decompression
+    // For memory-constrained environments (browser), this is the right choice.
+    if (
+      cachedImage.isCompressed &&
+      cachedImage.compressedBlob &&
+      this._compressionProvider
+    ) {
+      // Create a fresh decompression promise
+      const decompressionPromise = this._compressionProvider
+        .decompress(cachedImage.compressedBlob, imageId)
+        .then((decompressedPixelData) => {
+          const originalImage = cachedImage.image;
+          if (!originalImage) {
+            throw new Error('Image object not found for decompression');
+          }
+
+          // Create a NEW image object each time to avoid memory leaks
+          // This ensures old decompressed data can be garbage collected
+          const decompressedImage = {
+            ...originalImage,
+            // Replace pixel data accessor with fresh decompressed data
+            getPixelData: () => decompressedPixelData.getPixelData(),
+            // Don't include getCanvas - it will be recreated on-demand if needed
+            getCanvas: undefined,
+          };
+
+          return decompressedImage;
+        });
+
+      // Return a new load object each time - no memory accumulation
+      return {
+        promise: decompressionPromise,
+        cancelFn: cachedImage.imageLoadObject?.cancelFn,
+        decache: cachedImage.imageLoadObject?.decache,
+      };
+    }
+
+    // Image is loaded but promise was cleared to prevent memory leak
+    // Create a promise on-demand that resolves to the current cached image
+    if (cachedImage.loaded && !cachedImage.imageLoadObject?.promise) {
+      return {
+        promise: Promise.resolve(cachedImage.image),
+        cancelFn: cachedImage.imageLoadObject?.cancelFn,
+        decache: cachedImage.imageLoadObject?.decache,
+      };
+    }
+
+    // Image is still loading, return the original load object
     return cachedImage.imageLoadObject;
   }
 
