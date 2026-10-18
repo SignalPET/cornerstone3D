@@ -52,9 +52,11 @@ export function createByteCacheFacade(url: string): ByteCacheFacade {
       return this._headers.get(name.toLowerCase()) ?? null;
     },
     getAllResponseHeaders(): string {
-      return Array.from(this._headers.entries())
-        .map(([key, value]) => `${key}: ${value}`)
-        .join('\r\n');
+      const lines: string[] = [];
+      this._headers.forEach((value, key) => {
+        lines.push(`${key}: ${value}`);
+      });
+      return lines.join('\r\n');
     },
   };
 }
