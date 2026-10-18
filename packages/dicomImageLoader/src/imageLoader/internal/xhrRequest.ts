@@ -8,8 +8,10 @@ import { triggerEvent, eventTarget } from '@cornerstonejs/core';
 import {
   copyResponseOntoFacade,
   copyXhrOntoFacade,
+  BYTE_CACHE_FULL_HEADER,
   createByteCacheFacade,
   emitImageByteCache,
+  fullQualityUrl,
   imageByteCacheName,
   isImageByteCacheActive,
   matchRenderedFrame,
@@ -33,15 +35,28 @@ function xhrRequest(
       const cacheName = imageByteCacheName(options);
       const readStarted = performance.now();
       try {
-        const cached = await matchRenderedFrame(cacheName, url);
+        const higherQualityUrl = fullQualityUrl(url);
+        let cached: Response | undefined;
+        let promoted = false;
+        if (higherQualityUrl) {
+          cached = await matchRenderedFrame(cacheName, higherQualityUrl);
+          promoted = Boolean(cached);
+        }
+        if (!cached) {
+          cached = await matchRenderedFrame(cacheName, url);
+        }
         if (cached) {
           const buffer = await cached.arrayBuffer();
           copyResponseOntoFacade(facade, cached, buffer);
+          if (promoted) {
+            facade._headers.set(BYTE_CACHE_FULL_HEADER, '1');
+            facade.responseURL = higherQualityUrl ?? url;
+          }
           emitImageByteCache(options, {
-            result: 'hit',
+            result: promoted ? 'promoted' : 'hit',
             durationMs: performance.now() - readStarted,
             bytes: buffer.byteLength,
-            url,
+            url: promoted ? (higherQualityUrl ?? url) : url,
             imageId,
           });
           try {

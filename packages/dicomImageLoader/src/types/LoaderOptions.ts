@@ -7,7 +7,7 @@ import type {
 /** Named Cache API store for rendered JPEG frames. Shared with the viewer and logout. */
 export const IMAGE_BYTE_CACHE_NAME = 'sp-ohif-frames-v1';
 
-export type ImageByteCacheResult = 'hit' | 'miss' | 'store_fail';
+export type ImageByteCacheResult = 'hit' | 'promoted' | 'miss' | 'store_fail';
 
 export interface ImageByteCacheEvent {
   result: ImageByteCacheResult;
