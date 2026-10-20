@@ -91,7 +91,13 @@ function xhrRequest(
           const storedBody = realXhr.response.slice(0);
           const contentType = realXhr.getResponseHeader('Content-Type');
           const storeStarted = performance.now();
-          void storeRenderedFrame(cacheName, url, storedBody, contentType).catch(() => {
+          void storeRenderedFrame(
+            cacheName,
+            url,
+            storedBody,
+            contentType,
+            options.imageByteCache?.quotaBytes
+          ).catch(() => {
             emitImageByteCache(options, {
               result: 'store_fail',
               durationMs: performance.now() - storeStarted,

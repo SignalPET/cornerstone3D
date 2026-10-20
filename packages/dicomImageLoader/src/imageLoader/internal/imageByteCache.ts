@@ -199,14 +199,16 @@ async function makeRoom(
   cache: Cache,
   incomingQuality: number,
   keepUrl: string,
-  incomingBytes: number
+  incomingBytes: number,
+  quotaBytes?: number
 ): Promise<void> {
-  if (typeof navigator === 'undefined' || !navigator.storage?.estimate) {
+  const quotaOverride = quotaBytes && quotaBytes > 0 ? quotaBytes : 0;
+  if ((typeof navigator === 'undefined' || !navigator.storage?.estimate) && !quotaOverride) {
     return;
   }
   for (let round = 0; round < EVICT_ROUNDS; round++) {
-    const estimate = await navigator.storage.estimate();
-    const quota = estimate.quota ?? 0;
+    const estimate = navigator.storage?.estimate ? await navigator.storage.estimate() : {};
+    const quota = quotaOverride || (estimate.quota ?? 0);
     const usage = estimate.usage ?? 0;
     if (!quota || usage + incomingBytes <= quota * HIGH_WATER) {
       return;
@@ -222,7 +224,8 @@ export async function storeRenderedFrame(
   cacheName: string,
   url: string,
   body: ArrayBuffer,
-  contentType: string | null
+  contentType: string | null,
+  quotaBytes?: number
 ): Promise<void> {
   if (body.byteLength === 0) {
     return;
@@ -230,7 +233,7 @@ export async function storeRenderedFrame(
   const key = cacheKeyForUrl(url);
   const quality = renderedFrameQuality(url) ?? FULL_QUALITY;
   const cache = await caches.open(cacheName);
-  await makeRoom(cache, quality, key, body.byteLength);
+  await makeRoom(cache, quality, key, body.byteLength, quotaBytes);
   const buildResponse = () => {
     const headers = new Headers();
     if (contentType) {

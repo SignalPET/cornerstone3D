@@ -20,6 +20,11 @@ export interface ImageByteCacheEvent {
 export interface ImageByteCacheOptions {
   enabled?: boolean;
   cacheName?: string;
+  /**
+   * When set, eviction compares origin usage to this cap instead of the
+   * browser quota. Used to test a full cache without filling the disk.
+   */
+  quotaBytes?: number;
   onEvent?: (event: ImageByteCacheEvent) => void;
 }
 
