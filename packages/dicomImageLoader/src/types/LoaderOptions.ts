@@ -4,6 +4,30 @@ import type {
   LoaderXhrRequestParams,
 } from './XHRRequest';
 
+/** Named Cache API store for rendered JPEG frames. Shared with the viewer and logout. */
+export const IMAGE_BYTE_CACHE_NAME = 'sp-ohif-frames-v1';
+
+export type ImageByteCacheResult = 'hit' | 'promoted' | 'miss' | 'store_fail';
+
+export interface ImageByteCacheEvent {
+  result: ImageByteCacheResult;
+  durationMs: number;
+  bytes: number;
+  url: string;
+  imageId: string;
+}
+
+export interface ImageByteCacheOptions {
+  enabled?: boolean;
+  cacheName?: string;
+  /**
+   * When set, eviction compares origin usage to this cap instead of the
+   * browser quota. Used to test a full cache without filling the disk.
+   */
+  quotaBytes?: number;
+  onEvent?: (event: ImageByteCacheEvent) => void;
+}
+
 export interface LoaderOptions {
   maxWebWorkers?: number;
   // callback to open the object
@@ -31,4 +55,9 @@ export interface LoaderOptions {
   errorInterceptor?: (error: LoaderXhrRequestError) => void;
   strict?: boolean;
   decodeConfig?: LoaderDecodeOptions;
+  /**
+   * Persistent compressed-byte cache for `/frames-rendered/` JPEG responses.
+   * Off unless `enabled` is set. Raw `/frames/` and HTTP 206 are not stored.
+   */
+  imageByteCache?: ImageByteCacheOptions;
 }
