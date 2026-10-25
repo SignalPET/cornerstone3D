@@ -8,6 +8,7 @@ const RENDERED_FRAME_PATH = '/frames-rendered/';
 const FULL_QUALITY = 100;
 const QUALITY_HEADER = 'x-sp-quality';
 const STORED_AT_HEADER = 'x-sp-stored-at';
+const BYTES_HEADER = 'x-sp-bytes';
 /** Set on a response that served a cached quality=100 body in place of a lower request. */
 export const BYTE_CACHE_FULL_HEADER = 'x-sp-byte-cache-full';
 const HIGH_WATER = 0.9;
@@ -145,6 +146,14 @@ export async function matchRenderedFrame(
   return match ?? undefined;
 }
 
+/** An unread cache.match() body holds the Cache API lock and later reads never finish. */
+function releaseCacheBody(response: Response | undefined): void {
+  if (!response?.body) {
+    return;
+  }
+  void response.body.cancel().catch(() => undefined);
+}
+
 function isQuotaError(error: unknown): boolean {
   return (
     typeof error === 'object' &&
@@ -180,10 +189,11 @@ async function evictLowerPriority(
     const quality = Number.isFinite(headerQuality)
       ? headerQuality
       : (renderedFrameQuality(request.url) ?? FULL_QUALITY);
+    const storedAt = Number(response.headers.get(STORED_AT_HEADER));
+    releaseCacheBody(response);
     if (quality > incomingQuality) {
       continue;
     }
-    const storedAt = Number(response.headers.get(STORED_AT_HEADER));
     ranked.push({
       request,
       quality,
@@ -263,6 +273,7 @@ export async function storeRenderedFrame(
     }
     headers.set(QUALITY_HEADER, String(quality));
     headers.set(STORED_AT_HEADER, String(Date.now()));
+    headers.set(BYTES_HEADER, String(body.byteLength));
     return new Response(body, { status: 200, headers });
   };
   try {
