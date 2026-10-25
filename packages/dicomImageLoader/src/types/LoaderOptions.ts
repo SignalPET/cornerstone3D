@@ -7,7 +7,12 @@ import type {
 /** Named Cache API store for rendered JPEG frames. Shared with the viewer and logout. */
 export const IMAGE_BYTE_CACHE_NAME = 'sp-ohif-frames-v1';
 
-export type ImageByteCacheResult = 'hit' | 'promoted' | 'miss' | 'store_fail';
+export type ImageByteCacheResult =
+  | 'hit'
+  | 'promoted'
+  | 'miss'
+  | 'store_fail'
+  | 'prefetch_full';
 
 export interface ImageByteCacheEvent {
   result: ImageByteCacheResult;
@@ -25,6 +30,11 @@ export interface ImageByteCacheOptions {
    * browser quota. Used to test a full cache without filling the disk.
    */
   quotaBytes?: number;
+  /**
+   * Cache entries whose URL returns true are kept. Eviction still deletes
+   * every other entry, oldest first. A prefetch run passes its frame URLs.
+   */
+  isProtectedUrl?: (url: string) => boolean;
   onEvent?: (event: ImageByteCacheEvent) => void;
 }
 

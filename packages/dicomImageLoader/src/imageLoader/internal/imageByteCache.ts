@@ -163,12 +163,13 @@ type RankedEntry = {
 async function evictLowerPriority(
   cache: Cache,
   incomingQuality: number,
-  keepUrl: string
+  keepUrl: string,
+  isProtectedUrl?: (url: string) => boolean
 ): Promise<number> {
   const requests = await cache.keys();
   const ranked: RankedEntry[] = [];
   for (const request of requests) {
-    if (request.url === keepUrl) {
+    if (request.url === keepUrl || isProtectedUrl?.(request.url)) {
       continue;
     }
     const response = await cache.match(request);
@@ -195,45 +196,66 @@ async function evictLowerPriority(
   return batch.length;
 }
 
+/** True when usage stays over the high-water mark and no older entry can be deleted. */
 async function makeRoom(
   cache: Cache,
   incomingQuality: number,
   keepUrl: string,
   incomingBytes: number,
-  quotaBytes?: number
-): Promise<void> {
+  quotaBytes?: number,
+  isProtectedUrl?: (url: string) => boolean
+): Promise<boolean> {
   const quotaOverride = quotaBytes && quotaBytes > 0 ? quotaBytes : 0;
   if ((typeof navigator === 'undefined' || !navigator.storage?.estimate) && !quotaOverride) {
-    return;
+    return false;
   }
   for (let round = 0; round < EVICT_ROUNDS; round++) {
     const estimate = navigator.storage?.estimate ? await navigator.storage.estimate() : {};
     const quota = quotaOverride || (estimate.quota ?? 0);
     const usage = estimate.usage ?? 0;
     if (!quota || usage + incomingBytes <= quota * HIGH_WATER) {
-      return;
+      return false;
     }
-    const removed = await evictLowerPriority(cache, incomingQuality, keepUrl);
+    const removed = await evictLowerPriority(
+      cache,
+      incomingQuality,
+      keepUrl,
+      isProtectedUrl
+    );
     if (removed === 0) {
-      return;
+      return true;
     }
   }
+  return false;
 }
+
+export type StoreRenderedFrameResult = {
+  saturated: boolean;
+  stored: boolean;
+};
 
 export async function storeRenderedFrame(
   cacheName: string,
   url: string,
   body: ArrayBuffer,
   contentType: string | null,
-  quotaBytes?: number
-): Promise<void> {
+  quotaBytes?: number,
+  isProtectedUrl?: (url: string) => boolean
+): Promise<StoreRenderedFrameResult> {
   if (body.byteLength === 0) {
-    return;
+    return { saturated: false, stored: true };
   }
   const key = cacheKeyForUrl(url);
   const quality = renderedFrameQuality(url) ?? FULL_QUALITY;
   const cache = await caches.open(cacheName);
-  await makeRoom(cache, quality, key, body.byteLength, quotaBytes);
+  let saturated = await makeRoom(
+    cache,
+    quality,
+    key,
+    body.byteLength,
+    quotaBytes,
+    isProtectedUrl
+  );
   const buildResponse = () => {
     const headers = new Headers();
     if (contentType) {
@@ -249,10 +271,11 @@ export async function storeRenderedFrame(
     if (!isQuotaError(error)) {
       throw error;
     }
-    const removed = await evictLowerPriority(cache, quality, key);
+    const removed = await evictLowerPriority(cache, quality, key, isProtectedUrl);
     if (removed === 0) {
-      throw error;
+      return { saturated: true, stored: false };
     }
     await cache.put(key, buildResponse());
   }
+  return { saturated, stored: true };
 }
