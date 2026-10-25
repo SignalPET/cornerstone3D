@@ -12,7 +12,8 @@ export type ImageByteCacheResult =
   | 'promoted'
   | 'miss'
   | 'store_fail'
-  | 'prefetch_full';
+  | 'prefetch_full'
+  | 'evict';
 
 export interface ImageByteCacheEvent {
   result: ImageByteCacheResult;
@@ -20,6 +21,8 @@ export interface ImageByteCacheEvent {
   bytes: number;
   url: string;
   imageId: string;
+  /** Frames deleted by this store. Set when result is evict. */
+  evicted?: number;
 }
 
 export interface ImageByteCacheOptions {

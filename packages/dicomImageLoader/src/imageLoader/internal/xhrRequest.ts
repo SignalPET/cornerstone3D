@@ -118,6 +118,16 @@ function xhrRequest(
                 imageId,
               });
             }
+            if (result.evicted > 0) {
+              emitImageByteCache(options, {
+                result: 'evict',
+                durationMs: performance.now() - storeStarted,
+                bytes,
+                url,
+                imageId,
+                evicted: result.evicted,
+              });
+            }
           }).catch(() => {
             emitImageByteCache(options, {
               result: 'store_fail',

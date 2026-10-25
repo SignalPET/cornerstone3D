@@ -214,7 +214,12 @@ async function evictLowerPriority(
   return { removed: batch.length, skippedHigherQuality };
 }
 
-/** True when usage stays over the high-water mark and no older entry can be deleted. */
+type MakeRoomResult = {
+  /** True when usage stays over the high-water mark and no older entry can be deleted. */
+  saturated: boolean;
+  evicted: number;
+};
+
 async function makeRoom(
   cache: Cache,
   incomingQuality: number,
@@ -222,17 +227,18 @@ async function makeRoom(
   incomingBytes: number,
   quotaBytes?: number,
   isProtectedUrl?: (url: string) => boolean
-): Promise<boolean> {
+): Promise<MakeRoomResult> {
   const quotaOverride = quotaBytes && quotaBytes > 0 ? quotaBytes : 0;
   if ((typeof navigator === 'undefined' || !navigator.storage?.estimate) && !quotaOverride) {
-    return false;
+    return { saturated: false, evicted: 0 };
   }
+  let evicted = 0;
   for (let round = 0; round < EVICT_ROUNDS; round++) {
     const estimate = navigator.storage?.estimate ? await navigator.storage.estimate() : {};
     const quota = quotaOverride || (estimate.quota ?? 0);
     const usage = estimate.usage ?? 0;
     if (!quota || usage + incomingBytes <= quota * HIGH_WATER) {
-      return false;
+      return { saturated: false, evicted };
     }
     const { removed, skippedHigherQuality } = await evictLowerPriority(
       cache,
@@ -240,18 +246,20 @@ async function makeRoom(
       keepUrl,
       isProtectedUrl
     );
+    evicted += removed;
     // A quality=1 preview must not stop prefetch. It is not allowed to delete
     // quality=100 frames, and those frames are what a later full-quality store can evict.
     if (removed === 0) {
-      return skippedHigherQuality === 0;
+      return { saturated: skippedHigherQuality === 0, evicted };
     }
   }
-  return false;
+  return { saturated: false, evicted };
 }
 
 export type StoreRenderedFrameResult = {
   saturated: boolean;
   stored: boolean;
+  evicted: number;
 };
 
 export async function storeRenderedFrame(
@@ -263,12 +271,12 @@ export async function storeRenderedFrame(
   isProtectedUrl?: (url: string) => boolean
 ): Promise<StoreRenderedFrameResult> {
   if (body.byteLength === 0) {
-    return { saturated: false, stored: true };
+    return { saturated: false, stored: true, evicted: 0 };
   }
   const key = cacheKeyForUrl(url);
   const quality = renderedFrameQuality(url) ?? FULL_QUALITY;
   const cache = await caches.open(cacheName);
-  let saturated = await makeRoom(
+  const room = await makeRoom(
     cache,
     quality,
     key,
@@ -276,6 +284,8 @@ export async function storeRenderedFrame(
     quotaBytes,
     isProtectedUrl
   );
+  let saturated = room.saturated;
+  let evicted = room.evicted;
   const buildResponse = () => {
     const headers = new Headers();
     if (contentType) {
@@ -298,10 +308,11 @@ export async function storeRenderedFrame(
       key,
       isProtectedUrl
     );
+    evicted += removed;
     if (removed === 0) {
-      return { saturated: skippedHigherQuality === 0, stored: false };
+      return { saturated: skippedHigherQuality === 0, stored: false, evicted };
     }
     await cache.put(key, buildResponse());
   }
-  return { saturated, stored: true };
+  return { saturated, stored: true, evicted };
 }
