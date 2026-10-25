@@ -29,8 +29,8 @@ export interface ImageByteCacheOptions {
   enabled?: boolean;
   cacheName?: string;
   /**
-   * When set, eviction compares origin usage to this cap instead of the
-   * browser quota. Used to test a full cache without filling the disk.
+   * Testing only. When set, eviction uses this cap instead of the browser
+   * quota so a full cache can be tested without filling the disk.
    */
   quotaBytes?: number;
   /**
@@ -38,7 +38,7 @@ export interface ImageByteCacheOptions {
    * every other entry, oldest first. A prefetch run passes its frame URLs.
    */
   isProtectedUrl?: (url: string) => boolean;
-  /** When true, the downloaded frame is kept and the cache write is reported as a failure. */
+  /** Testing only. When this returns true, skip the cache write and report store_fail. */
   failStore?: () => boolean;
   onEvent?: (event: ImageByteCacheEvent) => void;
 }
