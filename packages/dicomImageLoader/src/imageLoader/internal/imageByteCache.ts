@@ -147,11 +147,52 @@ export async function matchRenderedFrame(
 }
 
 /** An unread cache.match() body holds the Cache API lock and later reads never finish. */
-function releaseCacheBody(response: Response | undefined): void {
+async function releaseCacheBody(response: Response | undefined): Promise<void> {
   if (!response?.body) {
     return;
   }
-  void response.body.cancel().catch(() => undefined);
+  try {
+    await response.body.cancel();
+  } catch {
+    // The body was already consumed.
+  }
+}
+
+let accountedBytes: number | null = null;
+let writeChain: Promise<void> = Promise.resolve();
+
+function enqueueWrite<T>(task: () => Promise<T>): Promise<T> {
+  const run = writeChain.then(task, task);
+  writeChain = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run;
+}
+
+async function readEntryBytes(response: Response): Promise<number> {
+  const declared = Number(response.headers.get(BYTES_HEADER));
+  if (Number.isFinite(declared) && declared >= 0) {
+    await releaseCacheBody(response);
+    return declared;
+  }
+  const blob = await response.blob();
+  return blob.size;
+}
+
+/** Byte size of this cache only. Origin usage includes the rest of the site. */
+async function measureCacheBytes(cache: Cache): Promise<number> {
+  const requests = await cache.keys();
+  let bytes = 0;
+  for (const request of requests) {
+    const response = await cache.match(request);
+    if (!response) {
+      continue;
+    }
+    bytes += await readEntryBytes(response);
+  }
+  accountedBytes = bytes;
+  return bytes;
 }
 
 function isQuotaError(error: unknown): boolean {
@@ -167,12 +208,14 @@ type RankedEntry = {
   request: Request;
   quality: number;
   storedAt: number;
+  bytes: number;
 };
 
 type EvictResult = {
   removed: number;
   /** Unprotected frames kept because they are higher quality than this write. */
   skippedHigherQuality: number;
+  bytesRemoved: number;
 };
 
 async function evictLowerPriority(
@@ -197,7 +240,7 @@ async function evictLowerPriority(
       ? headerQuality
       : (renderedFrameQuality(request.url) ?? FULL_QUALITY);
     const storedAt = Number(response.headers.get(STORED_AT_HEADER));
-    releaseCacheBody(response);
+    const bytes = await readEntryBytes(response);
     if (quality > incomingQuality) {
       skippedHigherQuality += 1;
       continue;
@@ -206,12 +249,17 @@ async function evictLowerPriority(
       request,
       quality,
       storedAt: Number.isFinite(storedAt) ? storedAt : 0,
+      bytes,
     });
   }
   ranked.sort((a, b) => a.quality - b.quality || a.storedAt - b.storedAt);
   const batch = ranked.slice(0, EVICT_BATCH);
   await Promise.all(batch.map(entry => cache.delete(entry.request)));
-  return { removed: batch.length, skippedHigherQuality };
+  const bytesRemoved = batch.reduce((sum, entry) => sum + entry.bytes, 0);
+  if (accountedBytes != null) {
+    accountedBytes = Math.max(0, accountedBytes - bytesRemoved);
+  }
+  return { removed: batch.length, skippedHigherQuality, bytesRemoved };
 }
 
 type MakeRoomResult = {
@@ -236,7 +284,11 @@ async function makeRoom(
   for (let round = 0; round < EVICT_ROUNDS; round++) {
     const estimate = navigator.storage?.estimate ? await navigator.storage.estimate() : {};
     const quota = quotaOverride || (estimate.quota ?? 0);
-    const usage = estimate.usage ?? 0;
+    // A test cap applies to this JPEG cache. Origin usage also counts IndexedDB
+    // and the rest of the site, so it does not say when this cache is full.
+    const usage = quotaOverride
+      ? (accountedBytes ?? (await measureCacheBytes(cache)))
+      : (estimate.usage ?? 0);
     if (!quota || usage + incomingBytes <= quota * HIGH_WATER) {
       return { saturated: false, evicted };
     }
@@ -262,7 +314,31 @@ export type StoreRenderedFrameResult = {
   evicted: number;
 };
 
+async function previousEntryBytes(cache: Cache, key: string): Promise<number> {
+  if (accountedBytes == null) {
+    return 0;
+  }
+  const existing = await cache.match(key);
+  if (!existing) {
+    return 0;
+  }
+  return readEntryBytes(existing);
+}
+
 export async function storeRenderedFrame(
+  cacheName: string,
+  url: string,
+  body: ArrayBuffer,
+  contentType: string | null,
+  quotaBytes?: number,
+  isProtectedUrl?: (url: string) => boolean
+): Promise<StoreRenderedFrameResult> {
+  return enqueueWrite(() =>
+    storeRenderedFrameNow(cacheName, url, body, contentType, quotaBytes, isProtectedUrl)
+  );
+}
+
+async function storeRenderedFrameNow(
   cacheName: string,
   url: string,
   body: ArrayBuffer,
@@ -296,6 +372,7 @@ export async function storeRenderedFrame(
     headers.set(BYTES_HEADER, String(body.byteLength));
     return new Response(body, { status: 200, headers });
   };
+  const previousBytes = await previousEntryBytes(cache, key);
   try {
     await cache.put(key, buildResponse());
   } catch (error) {
@@ -313,6 +390,9 @@ export async function storeRenderedFrame(
       return { saturated: skippedHigherQuality === 0, stored: false, evicted };
     }
     await cache.put(key, buildResponse());
+  }
+  if (accountedBytes != null) {
+    accountedBytes = Math.max(0, accountedBytes - previousBytes + body.byteLength);
   }
   return { saturated, stored: true, evicted };
 }
