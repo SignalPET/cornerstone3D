@@ -92,7 +92,18 @@ function xhrRequest(
           const storedBody = realXhr.response.slice(0);
           const contentType = realXhr.getResponseHeader('Content-Type');
           const storeStarted = performance.now();
-          storeSlot.current = storeRenderedFrame(
+          if (options.imageByteCache?.failStore?.()) {
+            storeSlot.current = Promise.resolve().then(() => {
+              emitImageByteCache(options, {
+                result: 'store_fail',
+                durationMs: 0,
+                bytes,
+                url,
+                imageId,
+              });
+            });
+          } else {
+            storeSlot.current = storeRenderedFrame(
             cacheName,
             url,
             storedBody,
@@ -137,6 +148,7 @@ function xhrRequest(
               imageId,
             });
           });
+          }
         }
         resolve(buffer);
       } catch (error) {

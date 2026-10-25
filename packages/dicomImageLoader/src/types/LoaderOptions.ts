@@ -38,6 +38,8 @@ export interface ImageByteCacheOptions {
    * every other entry, oldest first. A prefetch run passes its frame URLs.
    */
   isProtectedUrl?: (url: string) => boolean;
+  /** When true, the downloaded frame is kept and the cache write is reported as a failure. */
+  failStore?: () => boolean;
   onEvent?: (event: ImageByteCacheEvent) => void;
 }
 
