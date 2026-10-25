@@ -169,14 +169,21 @@ type RankedEntry = {
   storedAt: number;
 };
 
+type EvictResult = {
+  removed: number;
+  /** Unprotected frames kept because they are higher quality than this write. */
+  skippedHigherQuality: number;
+};
+
 async function evictLowerPriority(
   cache: Cache,
   incomingQuality: number,
   keepUrl: string,
   isProtectedUrl?: (url: string) => boolean
-): Promise<number> {
+): Promise<EvictResult> {
   const requests = await cache.keys();
   const ranked: RankedEntry[] = [];
+  let skippedHigherQuality = 0;
   for (const request of requests) {
     if (request.url === keepUrl || isProtectedUrl?.(request.url)) {
       continue;
@@ -192,6 +199,7 @@ async function evictLowerPriority(
     const storedAt = Number(response.headers.get(STORED_AT_HEADER));
     releaseCacheBody(response);
     if (quality > incomingQuality) {
+      skippedHigherQuality += 1;
       continue;
     }
     ranked.push({
@@ -203,7 +211,7 @@ async function evictLowerPriority(
   ranked.sort((a, b) => a.quality - b.quality || a.storedAt - b.storedAt);
   const batch = ranked.slice(0, EVICT_BATCH);
   await Promise.all(batch.map(entry => cache.delete(entry.request)));
-  return batch.length;
+  return { removed: batch.length, skippedHigherQuality };
 }
 
 /** True when usage stays over the high-water mark and no older entry can be deleted. */
@@ -226,14 +234,16 @@ async function makeRoom(
     if (!quota || usage + incomingBytes <= quota * HIGH_WATER) {
       return false;
     }
-    const removed = await evictLowerPriority(
+    const { removed, skippedHigherQuality } = await evictLowerPriority(
       cache,
       incomingQuality,
       keepUrl,
       isProtectedUrl
     );
+    // A quality=1 preview must not stop prefetch. It is not allowed to delete
+    // quality=100 frames, and those frames are what a later full-quality store can evict.
     if (removed === 0) {
-      return true;
+      return skippedHigherQuality === 0;
     }
   }
   return false;
@@ -282,9 +292,14 @@ export async function storeRenderedFrame(
     if (!isQuotaError(error)) {
       throw error;
     }
-    const removed = await evictLowerPriority(cache, quality, key, isProtectedUrl);
+    const { removed, skippedHigherQuality } = await evictLowerPriority(
+      cache,
+      quality,
+      key,
+      isProtectedUrl
+    );
     if (removed === 0) {
-      return { saturated: true, stored: false };
+      return { saturated: skippedHigherQuality === 0, stored: false };
     }
     await cache.put(key, buildResponse());
   }
