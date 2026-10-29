@@ -8,6 +8,10 @@ const RENDERED_FRAME_PATH = '/frames-rendered/';
 const FULL_QUALITY = 100;
 const QUALITY_HEADER = 'x-sp-quality';
 const STORED_AT_HEADER = 'x-sp-stored-at';
+/**
+ * JPEG size written at store time. Eviction accounting and the viewer's
+ * debug overlay read this instead of the body. A missing header is not zero.
+ */
 const BYTES_HEADER = 'x-sp-bytes';
 /** Set on a response that served a cached quality=100 body in place of a lower request. */
 export const BYTE_CACHE_FULL_HEADER = 'x-sp-byte-cache-full';
@@ -171,7 +175,9 @@ function enqueueWrite<T>(task: () => Promise<T>): Promise<T> {
 }
 
 async function readEntryBytes(response: Response): Promise<number> {
-  const declared = Number(response.headers.get(BYTES_HEADER));
+  // Number(null) is 0, so a missing header must not be treated as an empty entry.
+  const rawBytes = response.headers.get(BYTES_HEADER);
+  const declared = rawBytes == null || rawBytes === '' ? Number.NaN : Number(rawBytes);
   if (Number.isFinite(declared) && declared >= 0) {
     await releaseCacheBody(response);
     return declared;

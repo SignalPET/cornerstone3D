@@ -31,14 +31,24 @@ export interface ImageByteCacheOptions {
   /**
    * Testing only. When set, eviction uses this cap instead of the browser
    * quota so a full cache can be tested without filling the disk.
+   * The viewer sets it from iframe localStorage `spImageCacheQuotaMb`
+   * (megabytes), read once at viewer startup. That key wins over the
+   * `imageByteCacheQuotaMb` query param. Unset means the browser quota.
    */
   quotaBytes?: number;
   /**
-   * Cache entries whose URL returns true are kept. Eviction still deletes
-   * every other entry, oldest first. A prefetch run passes its frame URLs.
+   * Live prefetch protection, not a test switch. Entries whose URL returns
+   * true are kept. Eviction still deletes every other entry, oldest first.
+   * The viewer passes the current study's prefetch frame URLs. A small
+   * quotaBytes cap is what makes that eviction visible during testing.
    */
   isProtectedUrl?: (url: string) => boolean;
-  /** Testing only. When this returns true, skip the cache write and report store_fail. */
+  /**
+   * Testing only. When this returns true, skip the cache write and report
+   * store_fail. The image still displays. The viewer reads iframe
+   * localStorage `spImageCacheFailStore` === "1" on every store, so clearing
+   * the key applies on the next frame.
+   */
   failStore?: () => boolean;
   onEvent?: (event: ImageByteCacheEvent) => void;
 }

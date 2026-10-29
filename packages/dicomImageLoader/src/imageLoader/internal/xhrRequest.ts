@@ -92,6 +92,7 @@ function xhrRequest(
           const storedBody = realXhr.response.slice(0);
           const contentType = realXhr.getResponseHeader('Content-Type');
           const storeStarted = performance.now();
+          // Testing only. failStore skips the write and still returns the image.
           if (options.imageByteCache?.failStore?.()) {
             storeSlot.current = Promise.resolve().then(() => {
               emitImageByteCache(options, {
