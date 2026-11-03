@@ -18,4 +18,6 @@ export interface LoaderXhrRequestParams {
 
 export interface LoaderXhrRequestPromise<T> extends Promise<T> {
   xhr?: XMLHttpRequest;
+  /** Resolves after the rendered-frame byte cache store finishes. */
+  byteStore?: Promise<void>;
 }

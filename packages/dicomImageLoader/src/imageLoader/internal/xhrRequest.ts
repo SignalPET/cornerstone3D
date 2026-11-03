@@ -30,6 +30,7 @@ function xhrRequest(
   }
 
   const facade = createByteCacheFacade(url);
+  const storeSlot: { current?: Promise<void> } = {};
   const promise: LoaderXhrRequestPromise<ArrayBuffer> = new Promise<ArrayBuffer>(
     async (resolve, reject) => {
       const cacheName = imageByteCacheName(options);
@@ -91,13 +92,55 @@ function xhrRequest(
           const storedBody = realXhr.response.slice(0);
           const contentType = realXhr.getResponseHeader('Content-Type');
           const storeStarted = performance.now();
-          void storeRenderedFrame(
+          // Testing only. failStore skips the write and still returns the image.
+          if (options.imageByteCache?.failStore?.()) {
+            storeSlot.current = Promise.resolve().then(() => {
+              emitImageByteCache(options, {
+                result: 'store_fail',
+                durationMs: 0,
+                bytes,
+                url,
+                imageId,
+              });
+            });
+          } else {
+            storeSlot.current = storeRenderedFrame(
             cacheName,
             url,
             storedBody,
             contentType,
-            options.imageByteCache?.quotaBytes
-          ).catch(() => {
+            options.imageByteCache?.quotaBytes,
+            options.imageByteCache?.isProtectedUrl
+          ).then(result => {
+            if (!result.stored) {
+              emitImageByteCache(options, {
+                result: 'store_fail',
+                durationMs: performance.now() - storeStarted,
+                bytes,
+                url,
+                imageId,
+              });
+            }
+            if (result.saturated) {
+              emitImageByteCache(options, {
+                result: 'prefetch_full',
+                durationMs: performance.now() - storeStarted,
+                bytes,
+                url,
+                imageId,
+              });
+            }
+            if (result.evicted > 0) {
+              emitImageByteCache(options, {
+                result: 'evict',
+                durationMs: performance.now() - storeStarted,
+                bytes,
+                url,
+                imageId,
+                evicted: result.evicted,
+              });
+            }
+          }).catch(() => {
             emitImageByteCache(options, {
               result: 'store_fail',
               durationMs: performance.now() - storeStarted,
@@ -106,6 +149,7 @@ function xhrRequest(
               imageId,
             });
           });
+          }
         }
         resolve(buffer);
       } catch (error) {
@@ -115,6 +159,11 @@ function xhrRequest(
   );
 
   promise.xhr = facade as unknown as XMLHttpRequest;
+  Object.defineProperty(promise, 'byteStore', {
+    get() {
+      return storeSlot.current;
+    },
+  });
   return promise;
 }
 
