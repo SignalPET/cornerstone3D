@@ -1,5 +1,7 @@
 import type { Types } from '@cornerstonejs/core';
+import { Enums } from '@cornerstonejs/core';
 import { xhrRequest } from '../internal/index';
+import { BYTE_CACHE_FULL_HEADER } from '../internal/imageByteCache';
 // import rangeRequest from '../internal/rangeRequest';
 import streamRequest from '../internal/streamRequest';
 import rangeRequest from '../internal/rangeRequest';
@@ -62,7 +64,10 @@ function getPixelData(
       contentType,
       new Uint8Array(imageFrameAsArrayBuffer)
     );
-    extracted.imageQualityStatus = getImageQualityStatus(retrieveOptions, true);
+    const servedFullQuality = xhr.getResponseHeader(BYTE_CACHE_FULL_HEADER) === '1';
+    extracted.imageQualityStatus = servedFullQuality
+      ? Enums.ImageQualityStatus.FULL_RESOLUTION
+      : getImageQualityStatus(retrieveOptions, true);
     return extracted;
   });
 }

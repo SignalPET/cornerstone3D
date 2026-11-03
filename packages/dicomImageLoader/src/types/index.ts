@@ -4,7 +4,7 @@ import type {
   LoaderXhrRequestPromise,
 } from './XHRRequest';
 import type { WADORSMetaData, WADORSMetaDataElement } from './WADORSMetaData';
-import type { LoaderOptions } from './LoaderOptions';
+import type { LoaderOptions, ImageByteCacheEvent, ImageByteCacheOptions, ImageByteCacheResult } from './LoaderOptions';
 import type { LoaderDecodeOptions } from './LoaderDecodeOptions';
 import type { DICOMLoaderIImage } from './DICOMLoaderIImage';
 import type { DICOMLoaderImageOptions } from './DICOMLoaderImageOptions';
@@ -27,9 +27,14 @@ import type {
   WebWorkerDeferredObject,
 } from './WebWorkerTypes';
 
+export { IMAGE_BYTE_CACHE_NAME } from './LoaderOptions';
+
 export type {
   LoaderDecodeOptions,
   LoaderOptions,
+  ImageByteCacheEvent,
+  ImageByteCacheOptions,
+  ImageByteCacheResult,
   WADORSMetaData,
   WADORSMetaDataElement,
   LoaderXhrRequestError,
