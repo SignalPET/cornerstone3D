@@ -5,11 +5,13 @@ import {
 } from '../../types/LoaderOptions';
 
 const RENDERED_FRAME_PATH = '/frames-rendered/';
+/** Raw WADO-RS frames (JPEG-LS / EVRLE). Not a substring of /frames-rendered/. */
+const RAW_FRAME_PATH = '/frames/';
 const FULL_QUALITY = 100;
 const QUALITY_HEADER = 'x-sp-quality';
 const STORED_AT_HEADER = 'x-sp-stored-at';
 /**
- * JPEG size written at store time. Eviction accounting and the viewer's
+ * Encoded body size written at store time. Eviction accounting and the viewer's
  * debug overlay read this instead of the body. A missing header is not zero.
  */
 const BYTES_HEADER = 'x-sp-bytes';
@@ -30,10 +32,19 @@ export type ByteCacheFacade = {
   getAllResponseHeaders(): string;
 };
 
+/**
+ * Cache stores opaque encoded frame bytes: progressive JPEG (/frames-rendered/)
+ * and raw cross-sectional payloads (/frames/, e.g. multipart JPEG-LS or EVRLE).
+ * Quality promotion (q1→q100) only applies to rendered URLs with ?quality=.
+ */
+export function isByteCacheableFrameUrl(url: string): boolean {
+  return url.includes(RENDERED_FRAME_PATH) || url.includes(RAW_FRAME_PATH);
+}
+
 export function isImageByteCacheActive(options: LoaderOptions, url: string): boolean {
   return (
     Boolean(options.imageByteCache?.enabled) &&
-    url.includes(RENDERED_FRAME_PATH) &&
+    isByteCacheableFrameUrl(url) &&
     typeof caches !== 'undefined'
   );
 }
@@ -290,7 +301,7 @@ async function makeRoom(
   for (let round = 0; round < EVICT_ROUNDS; round++) {
     const estimate = navigator.storage?.estimate ? await navigator.storage.estimate() : {};
     const quota = quotaOverride || (estimate.quota ?? 0);
-    // A test cap applies to this JPEG cache. Origin usage also counts IndexedDB
+    // A test cap applies to this frame-byte cache. Origin usage also counts IndexedDB
     // and the rest of the site, so it does not say when this cache is full.
     const usage = quotaOverride
       ? (accountedBytes ?? (await measureCacheBytes(cache)))
